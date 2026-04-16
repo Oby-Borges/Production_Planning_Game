@@ -54,12 +54,8 @@ function renderSummary(data) {
         <p class="metric-value">${escapeHtml(data.summary.best_strategy)}</p>
       </article>
       <article class="metric-card">
-        <p class="metric-label">Full Plan Cost</p>
-        <p class="metric-value">${currency.format(data.summary.best_total_cost)}</p>
-      </article>
-      <article class="metric-card">
         <p class="metric-label">Aggregate Cost</p>
-        <p class="metric-value">${currency.format(data.summary.aggregate_cost)}</p>
+        <p class="metric-value">${currency.format(data.summary.best_total_cost)}</p>
       </article>
       <article class="metric-card">
         <p class="metric-label">Setup Cost</p>
@@ -76,35 +72,35 @@ function renderSummary(data) {
 
 function renderStrategies(data) {
   const rows = data.strategy_comparison;
-  const maxCost = Math.max(...rows.map((row) => row.total_planning_cost || row.total_cost), 1);
+  const maxCost = Math.max(...rows.map((row) => row.total_cost), 1);
 
   strategyPanel.innerHTML = `
     <h2>Aggregate Strategy Comparison</h2>
     <div class="strategy-grid">
       ${rows.map((row) => {
         const selected = row.strategy === data.best_strategy ? `<span class="selected-badge">Selected</span>` : "";
-        const feasibleClass = row.full_feasible ? "ok" : "no";
+        const feasibleClass = row.aggregate_feasible ? "ok" : "no";
         return `
           <article class="strategy-card">
             <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
               <div>
                 <p class="strategy-label">${escapeHtml(row.strategy)}</p>
-                <p class="strategy-value">${currency.format(row.total_planning_cost || row.total_cost)}</p>
+                <p class="strategy-value">${currency.format(row.total_cost)}</p>
               </div>
               <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
-                <span class="feasible-badge ${feasibleClass}">${row.full_feasible ? "Packet-ready" : "Needs sync"}</span>
+                <span class="feasible-badge ${feasibleClass}">${row.aggregate_feasible ? "Feasible" : "Infeasible"}</span>
                 ${selected}
               </div>
             </div>
             <div class="bar-stack">
               <div class="bar-row">
                 <span>Cost</span>
-                <div class="bar-track"><div class="bar-fill" style="width:${((row.total_planning_cost || row.total_cost) / maxCost) * 100}%"></div></div>
-                <strong>${currency.format(row.total_planning_cost || row.total_cost)}</strong>
+                <div class="bar-track"><div class="bar-fill" style="width:${(row.total_cost / maxCost) * 100}%"></div></div>
+                <strong>${currency.format(row.total_cost)}</strong>
               </div>
             </div>
             <p class="subtle" style="margin:14px 0 0;">Initial inventory: ${number.format(row.initial_inventory)} | Regular hours: ${number.format(row.regular_hours_q1)}, ${number.format(row.regular_hours_q2)}, ${number.format(row.regular_hours_q3)}</p>
-            <p class="subtle" style="margin:8px 0 0;">MPS feasible: ${row.mps_feasible ? "Yes" : "No"} | MRP feasible: ${row.mrp_feasible ? "Yes" : "No"} | Setups: ${currency.format(row.setup_cost || 0)}</p>
+            <p class="subtle" style="margin:8px 0 0;">Inventory OK: ${row.inventory_constraints_satisfied ? "Yes" : "No"} | Overtime OK: ${row.overtime_constraints_satisfied ? "Yes" : "No"} | Divisibility OK: ${row.divisibility_rules_satisfied ? "Yes" : "No"}</p>
             ${row.warnings ? `<p class="subtle" style="margin-top:10px;color:#a8572d;">${escapeHtml(row.warnings)}</p>` : ""}
           </article>
         `;

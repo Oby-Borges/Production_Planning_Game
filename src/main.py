@@ -169,33 +169,55 @@ def generate_plan_results(write_outputs: bool = True, print_summary: bool = Fals
             "total_planning_cost": total_planning_cost,
         }
 
-    fully_feasible = [name for name, run in scenario_runs.items() if run["full_feasible"]]
-    if fully_feasible:
-        best_name = min(fully_feasible, key=lambda name: scenario_runs[name]["total_planning_cost"])
+    # Aggregate-only source of truth for the dashboard selector and executive summary.
+    aggregate_feasible = [name for name, plan in plans.items() if plan.feasible]
+    if aggregate_feasible:
+        best_name = min(aggregate_feasible, key=lambda name: plans[name].cost_breakdown["total_cost"])
     else:
         best_name = choose_best_strategy(plans).strategy
     best_plan = plans[best_name]
     best_run = scenario_runs[best_name]
 
-    comparison_df = strategy_comparison_df(plans)
-    comparison_df["mps_feasible"] = comparison_df["strategy"].map(
-        lambda name: scenario_runs[name]["mps_feasible"]
-    )
-    comparison_df["mrp_feasible"] = comparison_df["strategy"].map(
-        lambda name: scenario_runs[name]["mrp_feasible"]
-    )
-    comparison_df["full_feasible"] = comparison_df["strategy"].map(
-        lambda name: scenario_runs[name]["full_feasible"]
-    )
-    comparison_df["setup_cost"] = comparison_df["strategy"].map(
-        lambda name: scenario_runs[name]["mps_summary"]["setup_cost"]
-    )
-    comparison_df["mrp_chosen_cost"] = comparison_df["strategy"].map(
-        lambda name: float(scenario_runs[name]["mrp_summary_df"]["chosen_total_cost"].sum())
-    )
-    comparison_df["total_planning_cost"] = comparison_df["strategy"].map(
-        lambda name: scenario_runs[name]["total_planning_cost"]
-    )
+    comparison_rows = []
+    for strategy_name, plan in plans.items():
+        costs = plan.cost_breakdown
+        if strategy_name == "chase":
+            requested = requested_aggregate_outcomes["chase"]
+            display_total = requested["costs"]["total_cost"]
+        elif strategy_name == "level":
+            requested = requested_aggregate_outcomes["level"]
+            display_total = requested["costs"]["total_cost"]
+        else:
+            display_total = costs["total_cost"]
+
+        feasibility_summary = plan.to_dict().get("feasibility_summary", {})
+        comparison_rows.append(
+            {
+                "strategy": strategy_name,
+                "feasible": plan.feasible,
+                "aggregate_feasible": feasibility_summary.get("aggregate_feasible", plan.feasible),
+                "inventory_constraints_satisfied": feasibility_summary.get("inventory_constraints_satisfied", plan.feasible),
+                "overtime_constraints_satisfied": feasibility_summary.get("overtime_constraints_satisfied", True),
+                "divisibility_rules_satisfied": feasibility_summary.get("divisibility_rules_satisfied", True),
+                "initial_inventory": plan.initial_inventory,
+                "regular_hours_q1": plan.regular_hours[0],
+                "regular_hours_q2": plan.regular_hours[1],
+                "regular_hours_q3": plan.regular_hours[2],
+                "overtime_hours_q1": plan.overtime_hours[0],
+                "overtime_hours_q2": plan.overtime_hours[1],
+                "overtime_hours_q3": plan.overtime_hours[2],
+                "material_cost": costs["material_cost"],
+                "regular_labor_cost": costs["regular_labor_cost"],
+                "overtime_labor_cost": costs["overtime_labor_cost"],
+                "training_cost": costs["training_cost"],
+                "relocation_cost": costs["relocation_cost"],
+                "aggregate_inventory_holding_cost": costs["aggregate_inventory_holding_cost"],
+                "initial_inventory_acquisition_cost": costs["initial_inventory_acquisition_cost"],
+                "total_cost": display_total,
+                "warnings": " | ".join(plan.warnings),
+            }
+        )
+    comparison_df = pd.DataFrame(comparison_rows).sort_values("total_cost")
     if write_outputs:
         comparison_df.to_csv(outputs_dir / "strategy_cost_comparison.csv", index=False)
 
@@ -206,7 +228,7 @@ def generate_plan_results(write_outputs: bool = True, print_summary: bool = Fals
         if write_outputs:
             plan_df.to_csv(outputs_dir / f"aggregate_plan_{strategy_name}.csv", index=False)
 
-    # 2) Use the fully evaluated best strategy for downstream outputs.
+    # 2) Use the aggregate-best strategy for downstream outputs so the app stays coherent.
     disagg_df = best_run["disaggregate_df"]
     disagg_detail = best_run["disaggregate_detail"]
     if write_outputs:
@@ -284,7 +306,7 @@ def generate_plan_results(write_outputs: bool = True, print_summary: bool = Fals
             "best_strategy": best_name,
             "summary": {
                 "best_strategy": best_name,
-                "best_total_cost": scenario_runs[best_name]["total_planning_cost"],
+                "best_total_cost": plans[best_name].cost_breakdown["total_cost"],
                 "aggregate_cost": plans[best_name].cost_breakdown["total_cost"],
                 "setup_cost": mps_summary["setup_cost"],
                 "mrp_chosen_cost": float(mrp_summary_df["chosen_total_cost"].sum()),
