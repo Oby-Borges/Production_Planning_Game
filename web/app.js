@@ -1,5 +1,7 @@
 const summaryPanel = document.getElementById("summary-panel");
 const strategyPanel = document.getElementById("strategy-panel");
+const hybridPanel = document.getElementById("hybrid-panel");
+const requestedAggregatePanel = document.getElementById("requested-aggregate-panel");
 const aggregatePanel = document.getElementById("aggregate-panel");
 const mpsPanel = document.getElementById("mps-panel");
 const mrpPanel = document.getElementById("mrp-panel");
@@ -52,16 +54,20 @@ function renderSummary(data) {
         <p class="metric-value">${escapeHtml(data.summary.best_strategy)}</p>
       </article>
       <article class="metric-card">
-        <p class="metric-label">Planned Cost</p>
+        <p class="metric-label">Full Plan Cost</p>
         <p class="metric-value">${currency.format(data.summary.best_total_cost)}</p>
+      </article>
+      <article class="metric-card">
+        <p class="metric-label">Aggregate Cost</p>
+        <p class="metric-value">${currency.format(data.summary.aggregate_cost)}</p>
       </article>
       <article class="metric-card">
         <p class="metric-label">Setup Cost</p>
         <p class="metric-value">${currency.format(data.summary.setup_cost)}</p>
       </article>
       <article class="metric-card">
-        <p class="metric-label">Setup Switches</p>
-        <p class="metric-value">${number.format(data.summary.setup_switches)}</p>
+        <p class="metric-label">MRP Chosen Cost</p>
+        <p class="metric-value">${currency.format(data.summary.mrp_chosen_cost)}</p>
       </article>
     </div>
     <div style="margin-top:16px;">${warningsBadge}</div>
@@ -70,38 +76,127 @@ function renderSummary(data) {
 
 function renderStrategies(data) {
   const rows = data.strategy_comparison;
-  const maxCost = Math.max(...rows.map((row) => row.total_cost), 1);
+  const maxCost = Math.max(...rows.map((row) => row.total_planning_cost || row.total_cost), 1);
 
   strategyPanel.innerHTML = `
     <h2>Aggregate Strategy Comparison</h2>
     <div class="strategy-grid">
       ${rows.map((row) => {
         const selected = row.strategy === data.best_strategy ? `<span class="selected-badge">Selected</span>` : "";
-        const feasibleClass = row.feasible ? "ok" : "no";
+        const feasibleClass = row.full_feasible ? "ok" : "no";
         return `
           <article class="strategy-card">
             <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
               <div>
                 <p class="strategy-label">${escapeHtml(row.strategy)}</p>
-                <p class="strategy-value">${currency.format(row.total_cost)}</p>
+                <p class="strategy-value">${currency.format(row.total_planning_cost || row.total_cost)}</p>
               </div>
               <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
-                <span class="feasible-badge ${feasibleClass}">${row.feasible ? "Feasible" : "Infeasible"}</span>
+                <span class="feasible-badge ${feasibleClass}">${row.full_feasible ? "Packet-ready" : "Needs sync"}</span>
                 ${selected}
               </div>
             </div>
             <div class="bar-stack">
               <div class="bar-row">
                 <span>Cost</span>
-                <div class="bar-track"><div class="bar-fill" style="width:${(row.total_cost / maxCost) * 100}%"></div></div>
-                <strong>${currency.format(row.total_cost)}</strong>
+                <div class="bar-track"><div class="bar-fill" style="width:${((row.total_planning_cost || row.total_cost) / maxCost) * 100}%"></div></div>
+                <strong>${currency.format(row.total_planning_cost || row.total_cost)}</strong>
               </div>
             </div>
             <p class="subtle" style="margin:14px 0 0;">Initial inventory: ${number.format(row.initial_inventory)} | Regular hours: ${number.format(row.regular_hours_q1)}, ${number.format(row.regular_hours_q2)}, ${number.format(row.regular_hours_q3)}</p>
+            <p class="subtle" style="margin:8px 0 0;">MPS feasible: ${row.mps_feasible ? "Yes" : "No"} | MRP feasible: ${row.mrp_feasible ? "Yes" : "No"} | Setups: ${currency.format(row.setup_cost || 0)}</p>
             ${row.warnings ? `<p class="subtle" style="margin-top:10px;color:#a8572d;">${escapeHtml(row.warnings)}</p>` : ""}
           </article>
         `;
       }).join("")}
+    </div>
+  `;
+}
+
+function renderRequestedAggregate(data) {
+  const outcomes = data.requested_aggregate_outcomes;
+  const renderCostList = (costs) => `
+    <div class="mini-grid">
+      <article class="mini-card"><p class="mini-label">Material</p><p class="mini-value">${currency.format(costs.material_cost)}</p></article>
+      <article class="mini-card"><p class="mini-label">Regular Labor</p><p class="mini-value">${currency.format(costs.regular_labor_cost)}</p></article>
+      <article class="mini-card"><p class="mini-label">Training</p><p class="mini-value">${currency.format(costs.training_cost)}</p></article>
+      <article class="mini-card"><p class="mini-label">Relocation</p><p class="mini-value">${currency.format(costs.relocation_cost)}</p></article>
+      <article class="mini-card"><p class="mini-label">Inventory Holding</p><p class="mini-value">${currency.format(costs.inventory_holding_cost)}</p></article>
+      <article class="mini-card"><p class="mini-label">Total</p><p class="mini-value">${currency.format(costs.total_cost)}</p></article>
+    </div>
+  `;
+
+  requestedAggregatePanel.innerHTML = `
+    <h2>Requested Aggregate Outcomes</h2>
+    <p class="subtle">These two tables follow your simplified aggregate-only instructions exactly: chase and level only, no overtime, no hybrid, no MPS/MRP adjustments.</p>
+    <div class="fruit-grid">
+      <article class="fruit-card">
+        <h3 style="margin:0 0 12px;font-size:1.2rem;">Chase Strategy</h3>
+        ${renderTable(["Quarter", "Demand", "Production", "Total Labor Hours", "Ending Inventory"], outcomes.chase.plan_rows)}
+        <div style="margin-top:16px;">${renderTable(["Quarter", "Regular Hours", "Overtime Hours"], outcomes.chase.labor_rows)}</div>
+        <div style="margin-top:16px;">${renderCostList(outcomes.chase.costs)}</div>
+      </article>
+      <article class="fruit-card">
+        <h3 style="margin:0 0 12px;font-size:1.2rem;">Level Strategy</h3>
+        <p class="subtle">Constant production: ${number.format(outcomes.level.constant_production)} units per quarter.</p>
+        ${renderTable(["Quarter", "Demand", "Production", "Total Labor Hours", "Ending Inventory"], outcomes.level.plan_rows)}
+        <div style="margin-top:16px;">${renderTable(["Quarter", "Regular Hours", "Overtime Hours"], outcomes.level.labor_rows)}</div>
+        <div style="margin-top:16px;">${renderCostList(outcomes.level.costs)}</div>
+      </article>
+    </div>
+  `;
+}
+
+function renderHybridSelector(data) {
+  const hybrid = data.plans.hybrid;
+  const decisionRows = [
+    {
+      "Initial Inventory": hybrid.initial_inventory,
+      "Regular Hours Q1": hybrid.regular_hours[0],
+      "Regular Hours Q2": hybrid.regular_hours[1],
+      "Regular Hours Q3": hybrid.regular_hours[2],
+      "OT Hours Q1": hybrid.overtime_hours[0],
+      "OT Hours Q2": hybrid.overtime_hours[1],
+      "OT Hours Q3": hybrid.overtime_hours[2],
+    },
+  ];
+  const resultRows = hybrid.production.map((_, index) => ({
+    Quarter: `Q${index + 1}`,
+    Demand: hybrid.demand[index],
+    Production: hybrid.production[index],
+    "Ending Inventory": hybrid.ending_inventory[index],
+  }));
+  const feasibility = hybrid.feasibility_summary || {};
+  const costs = hybrid.cost_breakdown;
+
+  hybridPanel.innerHTML = `
+    <h2>Hybrid Selector</h2>
+    <p class="subtle">This panel shows the app's bounded feasible-search hybrid aggregate plan using explicit initial inventory, regular hours, and overtime decisions.</p>
+    <div class="fruit-grid">
+      <article class="fruit-card">
+        <h3 style="margin:0 0 12px;font-size:1.2rem;">Decision Variables</h3>
+        ${renderTable(["Initial Inventory", "Regular Hours Q1", "Regular Hours Q2", "Regular Hours Q3", "OT Hours Q1", "OT Hours Q2", "OT Hours Q3"], decisionRows)}
+      </article>
+      <article class="fruit-card">
+        <h3 style="margin:0 0 12px;font-size:1.2rem;">Computed Results</h3>
+        ${renderTable(["Quarter", "Demand", "Production", "Ending Inventory"], resultRows)}
+      </article>
+    </div>
+    <div class="mini-grid" style="margin-top:16px;">
+      <article class="mini-card"><p class="mini-label">Aggregate Feasible</p><p class="mini-value">${feasibility.aggregate_feasible ? "Yes" : "No"}</p></article>
+      <article class="mini-card"><p class="mini-label">Inventory OK</p><p class="mini-value">${feasibility.inventory_constraints_satisfied ? "Yes" : "No"}</p></article>
+      <article class="mini-card"><p class="mini-label">Overtime OK</p><p class="mini-value">${feasibility.overtime_constraints_satisfied ? "Yes" : "No"}</p></article>
+      <article class="mini-card"><p class="mini-label">Divisibility OK</p><p class="mini-value">${feasibility.divisibility_rules_satisfied ? "Yes" : "No"}</p></article>
+    </div>
+    <div class="mini-grid" style="margin-top:16px;">
+      <article class="mini-card"><p class="mini-label">Initial Inventory</p><p class="mini-value">${currency.format(costs.initial_inventory_acquisition_cost)}</p></article>
+      <article class="mini-card"><p class="mini-label">Material</p><p class="mini-value">${currency.format(costs.material_cost)}</p></article>
+      <article class="mini-card"><p class="mini-label">Regular Labor</p><p class="mini-value">${currency.format(costs.regular_labor_cost)}</p></article>
+      <article class="mini-card"><p class="mini-label">Overtime</p><p class="mini-value">${currency.format(costs.overtime_labor_cost)}</p></article>
+      <article class="mini-card"><p class="mini-label">Training</p><p class="mini-value">${currency.format(costs.training_cost)}</p></article>
+      <article class="mini-card"><p class="mini-label">Relocation</p><p class="mini-value">${currency.format(costs.relocation_cost)}</p></article>
+      <article class="mini-card"><p class="mini-label">Holding</p><p class="mini-value">${currency.format(costs.aggregate_inventory_holding_cost)}</p></article>
+      <article class="mini-card"><p class="mini-label">Total</p><p class="mini-value">${currency.format(costs.total_cost)}</p></article>
     </div>
   `;
 }
@@ -243,6 +338,8 @@ function renderTable(headers, rows) {
 function renderDashboard(data) {
   renderSummary(data);
   renderStrategies(data);
+  renderHybridSelector(data);
+  renderRequestedAggregate(data);
   renderAggregate(data);
   renderMps(data);
   renderMrp(data);

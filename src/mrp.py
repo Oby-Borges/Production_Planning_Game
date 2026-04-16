@@ -68,31 +68,42 @@ def _run_mrp_with_deliveries(
     quality: float,
     initial_inventory: int,
     deliveries_good_units: List[int],
-) -> List[Dict]:
+) -> Dict:
     """Simulate MRP table using planned good-unit deliveries as target."""
     n = len(gross_reqs)
     rows: List[Dict] = []
     projected = initial_inventory
     releases = [0] * n
+    warnings: List[str] = []
+    feasible = True
 
     for t in range(n):
-        good_delivery = deliveries_good_units[t]
-        order_delivery = math.ceil(good_delivery / quality) if good_delivery > 0 else 0
-        if order_delivery > 0:
+        requested_good_delivery = deliveries_good_units[t]
+        if t < lead_time and requested_good_delivery > 0:
+            feasible = False
+            warnings.append(
+                f"Period {t+1}: lead time {lead_time} prevents delivery in this period; more initial inventory is required."
+            )
+
+        order_delivery = 0
+        usable_delivery = 0
+        if t >= lead_time and requested_good_delivery > 0:
+            order_delivery = math.ceil(requested_good_delivery / quality)
+            usable_delivery = math.floor(order_delivery * quality)
             rel_idx = t - lead_time
-            if rel_idx >= 0:
-                releases[rel_idx] += order_delivery
+            releases[rel_idx] += order_delivery
 
         projected_start = projected
-        projected = projected + good_delivery - gross_reqs[t]
+        projected = projected + usable_delivery - gross_reqs[t]
         net_req = max(0, gross_reqs[t] - projected_start)
         if projected < 0:
-            # Safety adjustment for any shortage by force-feeding delivery in same period.
-            add_good = abs(projected)
-            add_order = math.ceil(add_good / quality)
-            order_delivery += add_order
-            good_delivery += math.floor(add_order * quality)
-            projected = projected_start + good_delivery - gross_reqs[t]
+            # The packet's lead-time rules do not allow same-period rescue orders.
+            # Preserve the shortage as an infeasibility signal instead of masking it.
+            feasible = False
+            warnings.append(
+                f"Period {t+1}: shortage of {abs(projected)} units after respecting lead-time constraints."
+            )
+            projected = 0
 
         rows.append(
             {
@@ -111,7 +122,7 @@ def _run_mrp_with_deliveries(
     for t in range(n):
         rows[t]["Planned Order Release"] = releases[t]
 
-    return rows
+    return {"rows": rows, "warnings": warnings, "feasible": feasible}
 
 
 def evaluate_item_mrp(
@@ -138,20 +149,37 @@ def evaluate_item_mrp(
     l4l_good = _l4l_schedule(net)
     sm_good = _silver_meal_schedule(net, order_cost, hold)
 
-    l4l_rows = _run_mrp_with_deliveries(gross_requirements, lead_time, quality, initial_inventory, l4l_good)
-    sm_rows = _run_mrp_with_deliveries(gross_requirements, lead_time, quality, initial_inventory, sm_good)
+    l4l_result = _run_mrp_with_deliveries(gross_requirements, lead_time, quality, initial_inventory, l4l_good)
+    sm_result = _run_mrp_with_deliveries(gross_requirements, lead_time, quality, initial_inventory, sm_good)
 
-    l4l_cost = mrp_total_cost(l4l_rows, purchase, order_cost, hold)
-    sm_cost = mrp_total_cost(sm_rows, purchase, order_cost, hold)
+    l4l_cost = mrp_total_cost(l4l_result["rows"], purchase, order_cost, hold, initial_inventory=initial_inventory)
+    sm_cost = mrp_total_cost(sm_result["rows"], purchase, order_cost, hold, initial_inventory=initial_inventory)
 
-    chosen = "L4L" if l4l_cost["total_cost"] <= sm_cost["total_cost"] else "Silver-Meal"
+    feasible_methods = []
+    if l4l_result["feasible"]:
+        feasible_methods.append(("L4L", l4l_cost["total_cost"]))
+    if sm_result["feasible"]:
+        feasible_methods.append(("Silver-Meal", sm_cost["total_cost"]))
+
+    if feasible_methods:
+        chosen = min(feasible_methods, key=lambda item: item[1])[0]
+        feasible = True
+    else:
+        chosen = "L4L" if l4l_cost["total_cost"] <= sm_cost["total_cost"] else "Silver-Meal"
+        feasible = False
 
     return {
         "fruit": fruit_name,
-        "l4l": {"rows": l4l_rows, "cost": l4l_cost},
-        "silver_meal": {"rows": sm_rows, "cost": sm_cost},
+        "l4l": {"rows": l4l_result["rows"], "cost": l4l_cost, "feasible": l4l_result["feasible"], "warnings": l4l_result["warnings"]},
+        "silver_meal": {
+            "rows": sm_result["rows"],
+            "cost": sm_cost,
+            "feasible": sm_result["feasible"],
+            "warnings": sm_result["warnings"],
+        },
         "chosen": chosen,
         "initial_inventory": initial_inventory,
+        "feasible": feasible,
     }
 
 
@@ -161,9 +189,16 @@ def choose_initial_fruit_inventory(item_cfg: Dict, gross_requirements: List[int]
     best_cost = float("inf")
     for init_inv in range(max_initial + 1):
         result = evaluate_item_mrp("tmp", item_cfg, gross_requirements, order_cost, init_inv)
-        trial = min(result["l4l"]["cost"]["total_cost"], result["silver_meal"]["cost"]["total_cost"])
-        init_purchase_cost = init_inv * item_cfg["purchase_cost"]
-        total = trial + init_purchase_cost
+        feasible_costs = []
+        if result["l4l"]["feasible"]:
+            feasible_costs.append(result["l4l"]["cost"]["total_cost"])
+        if result["silver_meal"]["feasible"]:
+            feasible_costs.append(result["silver_meal"]["cost"]["total_cost"])
+
+        if not feasible_costs:
+            continue
+
+        total = min(feasible_costs)
         if total < best_cost:
             best_cost = total
             best_inv = init_inv
@@ -193,6 +228,7 @@ def build_all_mrp(inputs: Dict, mps_period_production: Dict[str, List[int]]) -> 
                 "fruit": fruit,
                 "initial_inventory": init_inv,
                 "chosen_method": item_res["chosen"],
+                "feasible": item_res["feasible"],
                 "l4l_total_cost": item_res["l4l"]["cost"]["total_cost"],
                 "silver_meal_total_cost": item_res["silver_meal"]["cost"]["total_cost"],
                 "chosen_total_cost": chosen_cost,

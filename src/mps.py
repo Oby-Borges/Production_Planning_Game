@@ -19,21 +19,91 @@ def _period_demands(inputs: Dict) -> List[Dict[str, int]]:
     return periods
 
 
-def _expand_quarter_production(disagg_detail: Dict[str, Dict[str, int]]) -> Dict[str, List[int]]:
-    """Split quarterly production into period-level using near-even integers."""
-    result: Dict[str, List[int]] = {}
-    for product, vals in disagg_detail.items():
-        period_vals: List[int] = []
-        for q in ["Q1", "Q2", "Q3"]:
-            q_total = vals[q]
-            base = q_total // 3
-            rem = q_total % 3
-            arr = [base, base, base]
-            for i in range(rem):
-                arr[i] += 1
-            period_vals.extend(arr)
-        result[product] = period_vals
-    return result
+def _period_labor_hours(best_plan: Dict, absentee_cfg: Dict) -> Tuple[List[int], List[int]]:
+    """Expand aggregate quarterly hours into period-level regular and overtime hours."""
+    regular_per_period: List[int] = []
+    overtime_per_period: List[int] = []
+
+    for period_idx in range(9):
+        quarter_idx = period_idx // 3
+        quarter_reg_hours = best_plan["regular_hours"][quarter_idx]
+        quarter_ot_hours = best_plan["overtime_hours"][quarter_idx]
+
+        reg_hours = quarter_reg_hours // 3
+        ot_hours = quarter_ot_hours // 3
+        if period_idx % 3 == 2:
+            ot_hours += quarter_ot_hours - (quarter_ot_hours // 3) * 3
+
+        if absentee_cfg.get("enabled") and period_idx == absentee_cfg.get("period_index"):
+            reg_hours = int(round(reg_hours * (1.0 - absentee_cfg.get("reduction_ratio", 0.0))))
+
+        regular_per_period.append(reg_hours)
+        overtime_per_period.append(ot_hours)
+
+    return regular_per_period, overtime_per_period
+
+
+def _build_period_production(
+    inputs: Dict,
+    best_plan: Dict,
+    disagg_detail: Dict[str, Dict[str, int]],
+    period_demand: List[Dict[str, int]],
+    regular_per_period: List[int],
+    overtime_per_period: List[int],
+) -> Dict[str, List[int]]:
+    """Build a period MPS that respects quarter totals while delaying extra inventory when possible."""
+    products = inputs["products"]
+    names = list(products.keys())
+    quarter_labels = ["Q1", "Q2", "Q3"]
+
+    period_prod: Dict[str, List[int]] = {p: [0] * 9 for p in names}
+    inventory = {p: disagg_detail[p]["initial_inventory"] for p in names}
+
+    for quarter_idx, quarter_label in enumerate(quarter_labels):
+        period_indices = list(range(quarter_idx * 3, quarter_idx * 3 + 3))
+        remaining_quarter_prod = {p: disagg_detail[p][quarter_label] for p in names}
+        remaining_capacity = {
+            idx: regular_per_period[idx] + overtime_per_period[idx]
+            for idx in period_indices
+        }
+        planning_inventory = inventory.copy()
+
+        # First, produce the minimum needed each period to avoid product shortages
+        # while honoring the quarter production totals selected earlier.
+        for idx in period_indices:
+            for product in names:
+                demand = period_demand[idx][product]
+                required = max(0, demand - planning_inventory[product])
+                produce = min(required, remaining_quarter_prod[product])
+                period_prod[product][idx] += produce
+                remaining_quarter_prod[product] -= produce
+                remaining_capacity[idx] -= produce * products[product]["labor_hours"]
+                planning_inventory[product] += produce - demand
+
+        # Then place the remaining quarter production as late as possible to keep
+        # early-period finished-goods and component needs lower, which better
+        # matches the packet's synchronization between MPS and MRP.
+        for idx in reversed(period_indices):
+            made_progress = True
+            while made_progress:
+                made_progress = False
+                for product in sorted(names, key=lambda name: products[name]["labor_hours"]):
+                    labor_hours = products[product]["labor_hours"]
+                    if remaining_quarter_prod[product] <= 0 or remaining_capacity[idx] < labor_hours:
+                        continue
+                    period_prod[product][idx] += 1
+                    remaining_quarter_prod[product] -= 1
+                    remaining_capacity[idx] -= labor_hours
+                    made_progress = True
+
+        # Update inventory through the quarter using the finished plan so the next
+        # quarter starts with the correct carryover.
+        for idx in period_indices:
+            for product in names:
+                inventory[product] += period_prod[product][idx]
+                inventory[product] -= period_demand[idx][product]
+
+    return period_prod
 
 
 def _sequence_and_count_setups(produced_items: List[str], prev_last: str | None) -> Tuple[List[str], int, str | None]:
@@ -48,10 +118,13 @@ def _sequence_and_count_setups(produced_items: List[str], prev_last: str | None)
     else:
         sequence = unique
 
+    # The packet charges setup cost when switching from one smoothie to another.
+    # Starting the very first product in period 1 is not a "switch", so we only
+    # count transitions after there is already an active setup.
     setups = 0
     current = prev_last
     for item in sequence:
-        if current != item:
+        if current is not None and current != item:
             setups += 1
         current = item
 
@@ -63,14 +136,10 @@ def build_mps(inputs: Dict, best_plan: Dict, disagg_detail: Dict[str, Dict[str, 
     """Build detailed period-by-period MPS with inventory and labor checks."""
     products = inputs["products"]
     period_demand = _period_demands(inputs)
-    period_prod = _expand_quarter_production(disagg_detail)
     setup_cost = inputs["mps"]["setup_cost"]
 
     init_inventory = {p: disagg_detail[p]["initial_inventory"] for p in products}
     inventory = init_inventory.copy()
-
-    regular_per_period: List[int] = []
-    overtime_per_period: List[int] = []
     warnings: List[str] = []
     rows: List[Dict] = []
 
@@ -78,23 +147,20 @@ def build_mps(inputs: Dict, best_plan: Dict, disagg_detail: Dict[str, Dict[str, 
     prev_last_product = None
 
     absentee_cfg = inputs["mps"]["q3_absenteeism"]
+    regular_per_period, overtime_per_period = _period_labor_hours(best_plan, absentee_cfg)
+    period_prod = _build_period_production(
+        inputs,
+        best_plan,
+        disagg_detail,
+        period_demand,
+        regular_per_period,
+        overtime_per_period,
+    )
 
     for period_idx in range(9):
         quarter_idx = period_idx // 3
-        quarter_reg_hours = best_plan["regular_hours"][quarter_idx]
-        quarter_ot_hours = best_plan["overtime_hours"][quarter_idx]
-
-        reg_hours = quarter_reg_hours // 3
-        ot_hours = quarter_ot_hours // 3
-        # Push any remainder overtime to the final period of each quarter.
-        if period_idx % 3 == 2:
-            ot_hours += quarter_ot_hours - (quarter_ot_hours // 3) * 3
-
-        if absentee_cfg.get("enabled") and period_idx == absentee_cfg.get("period_index"):
-            reg_hours = int(round(reg_hours * (1.0 - absentee_cfg.get("reduction_ratio", 0.0))))
-
-        regular_per_period.append(reg_hours)
-        overtime_per_period.append(ot_hours)
+        reg_hours = regular_per_period[period_idx]
+        ot_hours = overtime_per_period[period_idx]
 
         produced_items = [p for p in products if period_prod[p][period_idx] > 0]
         sequence, switches, prev_last_product = _sequence_and_count_setups(produced_items, prev_last_product)

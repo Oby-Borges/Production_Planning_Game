@@ -7,6 +7,7 @@ from typing import Dict, List
 
 def aggregate_cost_breakdown(plan: Dict, aggregate_cfg: Dict) -> Dict[str, float]:
     """Compute cost breakdown for one aggregate plan dictionary."""
+    material_rate = aggregate_cfg["average_material_cost_per_unit"]
     reg_rate = aggregate_cfg["regular_labor_cost_per_hour"]
     ot_rate = aggregate_cfg["overtime_labor_cost_per_hour"]
     train_rate = aggregate_cfg["training_cost_per_hour_change"]
@@ -14,6 +15,7 @@ def aggregate_cost_breakdown(plan: Dict, aggregate_cfg: Dict) -> Dict[str, float
     hold_rate = aggregate_cfg["holding_cost_per_unit_quarter"]
     init_inv_rate = aggregate_cfg["initial_inventory_acquisition_cost_per_unit"]
 
+    material_cost = sum(plan["production"]) * material_rate
     regular_cost = sum(plan["regular_hours"]) * reg_rate
     overtime_cost = sum(plan["overtime_hours"]) * ot_rate
 
@@ -32,6 +34,8 @@ def aggregate_cost_breakdown(plan: Dict, aggregate_cfg: Dict) -> Dict[str, float
     initial_inventory_cost = plan["initial_inventory"] * init_inv_rate
 
     total = (
+        material_cost
+        +
         regular_cost
         + overtime_cost
         + training_cost
@@ -41,6 +45,7 @@ def aggregate_cost_breakdown(plan: Dict, aggregate_cfg: Dict) -> Dict[str, float
     )
 
     return {
+        "material_cost": material_cost,
         "regular_labor_cost": regular_cost,
         "overtime_labor_cost": overtime_cost,
         "training_cost": training_cost,
@@ -56,10 +61,20 @@ def setup_cost_from_switches(num_switches: int, setup_cost_per_switch: float) ->
     return num_switches * setup_cost_per_switch
 
 
-def mrp_total_cost(rows: List[Dict], purchase_cost: float, order_cost: float, hold_cost: float) -> Dict[str, float]:
+def mrp_total_cost(
+    rows: List[Dict],
+    purchase_cost: float,
+    order_cost: float,
+    hold_cost: float,
+    initial_inventory: int = 0,
+) -> Dict[str, float]:
     """Compute purchase + ordering + holding for one fruit MRP result."""
-    ordered_qty = sum(r["Planned Order Delivery"] for r in rows)
+    ordered_qty = initial_inventory + sum(r["Planned Order Delivery"] for r in rows)
     num_orders = sum(1 for r in rows if r["Planned Order Delivery"] > 0)
+    if initial_inventory > 0:
+        # The packet treats requested initial fruit inventory like a real order:
+        # it incurs both purchasing cost and one order cost for that fruit type.
+        num_orders += 1
     ending_inv_total = sum(r["Projected Ending Inventory"] for r in rows)
 
     purchase = ordered_qty * purchase_cost
