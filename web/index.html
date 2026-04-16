@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Production Planning Game</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Production Planning Game</p>
+        <h1>From planning script to decision dashboard.</h1>
+        <p class="hero-copy">
+          Run the deterministic planning model, compare aggregate strategies, and inspect MPS and MRP outputs in one place.
+        </p>
+      </div>
+      <div class="hero-actions">
+        <button id="rerun-button" class="primary-button">Run Planning Model</button>
+        <p id="status-text" class="status-text">Loading current results...</p>
+      </div>
+    </header>
+
+    <main class="dashboard-grid">
+      <section class="panel panel-emphasis" id="summary-panel"></section>
+      <section class="panel" id="strategy-panel"></section>
+      <section class="panel" id="aggregate-panel"></section>
+      <section class="panel" id="mps-panel"></section>
+      <section class="panel" id="mrp-panel"></section>
+      <section class="panel" id="report-panel"></section>
+      <section class="panel" id="downloads-panel"></section>
+    </main>
+  </div>
+
+  <template id="empty-state-template">
+    <div class="empty-state">
+      <h2>No data yet</h2>
+      <p>Run the planning model to generate results.</p>
+    </div>
+  </template>
+
+  <script src="/app.js"></script>
+</body>
+</html>

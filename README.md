@@ -58,6 +58,26 @@ From repository root:
 python src/main.py
 ```
 
+## Local Dashboard App
+
+To launch the browser-based local app:
+
+```bash
+python src/app.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000
+```
+
+The dashboard lets you:
+- re-run the planning model from the browser
+- compare aggregate strategies visually
+- inspect aggregate, MPS, and MRP tables
+- open generated CSV and text outputs directly
+
 The script will:
 1. Generate and compare aggregate strategies (chase, level, hybrid)
 2. Choose best strategy by total planned cost
