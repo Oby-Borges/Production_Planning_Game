@@ -1,0 +1,92 @@
+{
+  "horizon": {
+    "quarters": 3,
+    "periods": 9,
+    "periods_per_quarter": 3
+  },
+  "aggregate": {
+    "average_labor_hours_per_unit": 3,
+    "average_material_cost_per_unit": 15,
+    "average_selling_price_per_unit": 125,
+    "regular_labor_cost_per_hour": 12,
+    "overtime_labor_cost_per_hour": 18,
+    "contract_labor_cost_per_hour": 25,
+    "initial_inventory_acquisition_cost_per_unit": 51,
+    "training_cost_per_hour_change": 6,
+    "relocation_cost_per_hour_change": 7,
+    "holding_cost_per_unit_quarter": 18,
+    "forecast_quarterly_demand": {
+      "Q1": 180,
+      "Q2": 330,
+      "Q3": 270
+    },
+    "initial_regular_hours_q1": 300,
+    "max_initial_finished_goods": 20,
+    "max_overtime_ratio_per_period": 0.5,
+    "regular_hours_must_be_divisible_by": 3
+  },
+  "products": {
+    "Blueberry Pear": {
+      "labor_hours": 2,
+      "holding_cost_per_unit_period": 5.5,
+      "selling_price": 110,
+      "material_cost": 10,
+      "initial_inventory_acquisition_cost": 34,
+      "quarterly_demand": {"Q1": 36, "Q2": 66, "Q3": 54},
+      "period_demand": {
+        "Q1": {"mean": 12, "std": 3},
+        "Q2": {"mean": 22, "std": 6},
+        "Q3": {"mean": 18, "std": 4}
+      }
+    },
+    "Strawberry Pear": {
+      "labor_hours": 4,
+      "holding_cost_per_unit_period": 6.5,
+      "selling_price": 140,
+      "material_cost": 20,
+      "initial_inventory_acquisition_cost": 68,
+      "quarterly_demand": {"Q1": 36, "Q2": 66, "Q3": 54},
+      "period_demand": {
+        "Q1": {"mean": 12, "std": 3},
+        "Q2": {"mean": 22, "std": 6},
+        "Q3": {"mean": 18, "std": 4}
+      }
+    },
+    "Blueberry Banana": {
+      "labor_hours": 3,
+      "holding_cost_per_unit_period": 6.0,
+      "selling_price": 125,
+      "material_cost": 15,
+      "initial_inventory_acquisition_cost": 51,
+      "quarterly_demand": {"Q1": 108, "Q2": 198, "Q3": 162},
+      "period_demand": {
+        "Q1": {"mean": 36, "std": 6},
+        "Q2": {"mean": 66, "std": 12},
+        "Q3": {"mean": 54, "std": 8}
+      }
+    }
+  },
+  "bom": {
+    "Blueberry Pear": {"Blueberry": 1, "Pear": 1},
+    "Strawberry Pear": {"Strawberry": 1, "Pear": 1},
+    "Blueberry Banana": {"Blueberry": 1, "Banana": 1}
+  },
+  "fruits": {
+    "Blueberry": {"lead_time": 1, "purchase_cost": 5, "holding_cost": 1.5, "quality": 1.0},
+    "Pear": {"lead_time": 1, "purchase_cost": 5, "holding_cost": 1.5, "quality": 1.0},
+    "Strawberry": {"lead_time": 2, "purchase_cost": 15, "holding_cost": 3.1, "quality": 0.95},
+    "Banana": {"lead_time": 1, "purchase_cost": 10, "holding_cost": 2.2, "quality": 0.9}
+  },
+  "mrp": {
+    "order_cost": 60,
+    "max_initial_fruit_inventory": 50
+  },
+  "mps": {
+    "setup_cost": 75,
+    "q3_absenteeism": {
+      "enabled": false,
+      "period_index": 7,
+      "reduction_ratio": 0.5
+    }
+  }
+}
