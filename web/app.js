@@ -1,6 +1,9 @@
 const summaryPanel = document.getElementById("summary-panel");
 const strategyPanel = document.getElementById("strategy-panel");
 const hybridPanel = document.getElementById("hybrid-panel");
+const finalRankingPanel = document.getElementById("final-ranking-panel");
+const mpsStagePanel = document.getElementById("mps-stage-panel");
+const mrpStagePanel = document.getElementById("mrp-stage-panel");
 const requestedAggregatePanel = document.getElementById("requested-aggregate-panel");
 const aggregatePanel = document.getElementById("aggregate-panel");
 const mpsPanel = document.getElementById("mps-panel");
@@ -50,20 +53,24 @@ function renderSummary(data) {
     <p class="subtle">Generated ${new Date(data.generated_at).toLocaleString()}</p>
     <div class="metric-grid">
       <article class="metric-card">
-        <p class="metric-label">Best Strategy</p>
+        <p class="metric-label">Best Final Plan</p>
         <p class="metric-value">${escapeHtml(data.summary.best_strategy)}</p>
       </article>
       <article class="metric-card">
-        <p class="metric-label">Aggregate Cost</p>
+        <p class="metric-label">Final Cost</p>
         <p class="metric-value">${currency.format(data.summary.best_total_cost)}</p>
       </article>
       <article class="metric-card">
-        <p class="metric-label">Setup Cost</p>
-        <p class="metric-value">${currency.format(data.summary.setup_cost)}</p>
+        <p class="metric-label">Best Aggregate Plan</p>
+        <p class="metric-value">${escapeHtml(data.summary.cheapest_aggregate_plan)}</p>
       </article>
       <article class="metric-card">
-        <p class="metric-label">MRP Chosen Cost</p>
-        <p class="metric-value">${currency.format(data.summary.mrp_chosen_cost)}</p>
+        <p class="metric-label">Aggregate Benchmark</p>
+        <p class="metric-value">${currency.format(data.summary.cheapest_aggregate_cost)}</p>
+      </article>
+      <article class="metric-card">
+        <p class="metric-label">Selected Aggregate Cost</p>
+        <p class="metric-value">${currency.format(data.summary.aggregate_cost)}</p>
       </article>
     </div>
     <div style="margin-top:16px;">${warningsBadge}</div>
@@ -71,14 +78,14 @@ function renderSummary(data) {
 }
 
 function renderStrategies(data) {
-  const rows = data.strategy_comparison;
+  const rows = data.aggregate_stage_summary;
   const maxCost = Math.max(...rows.map((row) => row.total_cost), 1);
 
   strategyPanel.innerHTML = `
-    <h2>Aggregate Strategy Comparison</h2>
+    <h2>Aggregate Stage Summary</h2>
     <div class="strategy-grid">
       ${rows.map((row) => {
-        const selected = row.strategy === data.best_strategy ? `<span class="selected-badge">Selected</span>` : "";
+        const selected = row.candidate_id === data.summary.cheapest_aggregate_candidate_id ? `<span class="selected-badge">Cheapest Aggregate</span>` : "";
         const feasibleClass = row.aggregate_feasible ? "ok" : "no";
         return `
           <article class="strategy-card">
@@ -99,7 +106,8 @@ function renderStrategies(data) {
                 <strong>${currency.format(row.total_cost)}</strong>
               </div>
             </div>
-            <p class="subtle" style="margin:14px 0 0;">Initial inventory: ${number.format(row.initial_inventory)} | Regular hours: ${number.format(row.regular_hours_q1)}, ${number.format(row.regular_hours_q2)}, ${number.format(row.regular_hours_q3)}</p>
+            <p class="subtle" style="margin:14px 0 0;">Rank: ${row.aggregate_rank} | ${escapeHtml(row.display_name)} | Initial inventory: ${number.format(row.initial_inventory)}</p>
+            <p class="subtle" style="margin:8px 0 0;">Regular hours: ${number.format(row.regular_hours_q1)}, ${number.format(row.regular_hours_q2)}, ${number.format(row.regular_hours_q3)} | Overtime: ${number.format(row.overtime_hours_q1)}, ${number.format(row.overtime_hours_q2)}, ${number.format(row.overtime_hours_q3)}</p>
             <p class="subtle" style="margin:8px 0 0;">Inventory OK: ${row.inventory_constraints_satisfied ? "Yes" : "No"} | Overtime OK: ${row.overtime_constraints_satisfied ? "Yes" : "No"} | Divisibility OK: ${row.divisibility_rules_satisfied ? "Yes" : "No"}</p>
             ${row.warnings ? `<p class="subtle" style="margin-top:10px;color:#a8572d;">${escapeHtml(row.warnings)}</p>` : ""}
           </article>
@@ -144,7 +152,7 @@ function renderRequestedAggregate(data) {
 }
 
 function renderHybridSelector(data) {
-  const hybrid = data.plans.hybrid;
+  const hybrid = data.plans.hybrid_benchmark || data.plans.hybrid_1;
   const decisionRows = [
     {
       "Initial Inventory": hybrid.initial_inventory,
@@ -197,13 +205,68 @@ function renderHybridSelector(data) {
   `;
 }
 
+function renderFinalRanking(data) {
+  const rows = data.final_ranking;
+  finalRankingPanel.innerHTML = `
+    <h2>Final Ranking</h2>
+    <p class="subtle">Only plans that are aggregate-feasible, MPS-feasible, and MRP-feasible are eligible to win.</p>
+    ${renderTable(
+      ["display_name", "strategy", "aggregate_rank", "aggregate_cost", "mps_feasible", "mrp_feasible", "full_feasible", "setup_cost", "mrp_chosen_cost", "final_total_cost"],
+      rows.map((row) => ({
+        display_name: row.display_name,
+        strategy: row.strategy,
+        aggregate_rank: row.aggregate_rank,
+        aggregate_cost: currency.format(row.aggregate_cost),
+        mps_feasible: row.mps_feasible ? "Yes" : "No",
+        mrp_feasible: row.mrp_feasible ? "Yes" : "No",
+        full_feasible: row.full_feasible ? "Yes" : "No",
+        setup_cost: currency.format(row.setup_cost),
+        mrp_chosen_cost: currency.format(row.mrp_chosen_cost),
+        final_total_cost: currency.format(row.final_total_cost),
+      }))
+    )}
+  `;
+}
+
+function renderMpsStage(data) {
+  const rows = data.mps_stage_summary.map((row) => ({
+    display_name: row.display_name,
+    strategy: row.strategy,
+    aggregate_rank: row.aggregate_rank,
+    mps_feasible: row.mps_feasible ? "Yes" : "No",
+    setup_switches: row.setup_switches,
+    setup_cost: currency.format(row.setup_cost),
+    warnings: row.warnings.join(" | "),
+  }));
+  mpsStagePanel.innerHTML = `
+    <h2>MPS Stage Summary</h2>
+    ${renderTable(["display_name", "strategy", "aggregate_rank", "mps_feasible", "setup_switches", "setup_cost", "warnings"], rows)}
+  `;
+}
+
+function renderMrpStage(data) {
+  const rows = data.mrp_stage_summary.map((row) => ({
+    display_name: row.display_name,
+    strategy: row.strategy,
+    mps_feasible: row.mps_feasible ? "Yes" : "No",
+    mrp_feasible: row.mrp_feasible ? "Yes" : "No",
+    chosen_mrp_cost: currency.format(row.chosen_mrp_cost),
+    fruit_methods: row.fruit_methods.map((item) => `${item.fruit}: ${item.chosen_method}`).join(" | "),
+    warnings: row.warnings.join(" | "),
+  }));
+  mrpStagePanel.innerHTML = `
+    <h2>MRP Stage Summary</h2>
+    ${renderTable(["display_name", "strategy", "mps_feasible", "mrp_feasible", "chosen_mrp_cost", "fruit_methods", "warnings"], rows)}
+  `;
+}
+
 function renderAggregate(data) {
-  const rows = data.aggregate_tables[data.best_strategy] || [];
+  const rows = data.aggregate_best_table || [];
   const headers = ["Quarter", "Demand", "Production", "Regular Hours", "Overtime Hours", "Regular Units", "Overtime Units", "Ending Inventory"];
 
   aggregatePanel.innerHTML = `
-    <h2>Best Aggregate Plan</h2>
-    <p class="subtle">Quarter-level production and labor plan for the selected strategy.</p>
+    <h2>Selected Final Plan</h2>
+    <p class="subtle">Quarter-level aggregate plan for the lowest-cost candidate that survives all stages.</p>
     ${renderTable(headers, rows)}
   `;
 }
@@ -335,6 +398,9 @@ function renderDashboard(data) {
   renderSummary(data);
   renderStrategies(data);
   renderHybridSelector(data);
+  renderFinalRanking(data);
+  renderMpsStage(data);
+  renderMrpStage(data);
   renderRequestedAggregate(data);
   renderAggregate(data);
   renderMps(data);

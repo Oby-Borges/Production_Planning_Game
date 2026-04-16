@@ -213,8 +213,8 @@ def build_level_strategy(inputs: Dict) -> AggregatePlan:
     return best
 
 
-def build_hybrid_strategy(inputs: Dict, chase: AggregatePlan, level: AggregatePlan) -> AggregatePlan:
-    """Search for the lowest-cost feasible hybrid plan over bounded candidate ranges."""
+def build_hybrid_candidates(inputs: Dict, limit: int = 5) -> List[AggregatePlan]:
+    """Return the top K cheapest aggregate-feasible hybrid candidates."""
     cfg = inputs["aggregate"]
     demands = [cfg["forecast_quarterly_demand"][f"Q{i}"] for i in range(1, 4)]
     reg_multiple = cfg["regular_hours_must_be_divisible_by"]
@@ -295,7 +295,8 @@ def build_hybrid_strategy(inputs: Dict, chase: AggregatePlan, level: AggregatePl
                         }
         states = next_states
 
-    best: Optional[AggregatePlan] = None
+    candidates: List[AggregatePlan] = []
+    seen: set[tuple[int, tuple[int, ...], tuple[int, ...]]] = set()
     for (_, _), state in states.items():
         candidate = _evaluate_candidate_plan(
             "hybrid",
@@ -307,19 +308,35 @@ def build_hybrid_strategy(inputs: Dict, chase: AggregatePlan, level: AggregatePl
         )
         if not candidate.feasible:
             continue
-        if best is None or candidate.cost_breakdown["total_cost"] < best.cost_breakdown["total_cost"]:
-            best = candidate
-
-    if best is None:
-        return _evaluate_candidate_plan(
-            "hybrid",
-            demands,
-            [chase.regular_hours[0], level.regular_hours[1], level.regular_hours[2]],
-            [0, 0, 0],
-            0,
-            cfg,
+        key = (
+            candidate.initial_inventory,
+            tuple(candidate.regular_hours),
+            tuple(candidate.overtime_hours),
         )
-    return best
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+
+    candidates.sort(key=lambda plan: plan.cost_breakdown["total_cost"])
+    return candidates[:limit]
+
+
+def build_hybrid_strategy(inputs: Dict, chase: AggregatePlan, level: AggregatePlan) -> AggregatePlan:
+    """Return the cheapest aggregate-feasible hybrid candidate."""
+    candidates = build_hybrid_candidates(inputs, limit=1)
+    if candidates:
+        return candidates[0]
+    cfg = inputs["aggregate"]
+    demands = [cfg["forecast_quarterly_demand"][f"Q{i}"] for i in range(1, 4)]
+    return _evaluate_candidate_plan(
+        "hybrid",
+        demands,
+        [chase.regular_hours[0], level.regular_hours[1], level.regular_hours[2]],
+        [0, 0, 0],
+        0,
+        cfg,
+    )
 
 
 def build_all_strategies(inputs: Dict) -> Dict[str, AggregatePlan]:

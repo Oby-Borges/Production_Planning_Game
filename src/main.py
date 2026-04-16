@@ -8,7 +8,11 @@ from typing import Any, Dict
 
 import pandas as pd
 
-from aggregate_planning import build_all_strategies, choose_best_strategy
+from aggregate_planning import (
+    build_chase_strategy,
+    build_hybrid_candidates,
+    build_level_strategy,
+)
 from data_loader import load_inputs
 from disaggregate import build_disaggregate_plan
 from mps import build_mps
@@ -132,6 +136,13 @@ def _round_nested(value: Any) -> Any:
     return value
 
 
+def _candidate_display_name(candidate: Dict[str, Any]) -> str:
+    """Return a short display label for a candidate plan."""
+    if candidate["strategy"] == "hybrid" and candidate.get("hybrid_rank") is not None:
+        return f"Hybrid #{candidate['hybrid_rank']}"
+    return candidate["strategy"].capitalize()
+
+
 def generate_plan_results(write_outputs: bool = True, print_summary: bool = False) -> Dict[str, Any]:
     """Run the full planning workflow and return a serializable result bundle."""
     inputs = load_inputs()
@@ -140,10 +151,29 @@ def generate_plan_results(write_outputs: bool = True, print_summary: bool = Fals
     if write_outputs:
         ensure_dir(outputs_dir)
 
-    # 1) Aggregate strategy generation and comparison.
-    plans = build_all_strategies(inputs)
-    scenario_runs: Dict[str, Dict[str, Any]] = {}
-    for strategy_name, plan in plans.items():
+    # 1) Aggregate search: keep benchmarks plus the top K hybrid candidates.
+    chase_plan = build_chase_strategy(inputs)
+    level_plan = build_level_strategy(inputs)
+    hybrid_candidates = build_hybrid_candidates(inputs, limit=5)
+    candidate_pool: List[Dict[str, Any]] = [
+        {"candidate_id": "chase", "strategy": "chase", "plan": chase_plan, "hybrid_rank": None},
+        {"candidate_id": "level", "strategy": "level", "plan": level_plan, "hybrid_rank": None},
+    ]
+    for idx, plan in enumerate(hybrid_candidates, start=1):
+        candidate_pool.append(
+            {
+                "candidate_id": f"hybrid_{idx}",
+                "strategy": "hybrid",
+                "plan": plan,
+                "hybrid_rank": idx,
+            }
+        )
+
+    stage_runs: Dict[str, Dict[str, Any]] = {}
+    aggregate_stage_rows: List[Dict[str, Any]] = []
+    for candidate in candidate_pool:
+        plan = candidate["plan"]
+        candidate_id = candidate["candidate_id"]
         disagg_df, disagg_detail = build_disaggregate_plan(inputs, plan.to_dict())
         mps_df, mps_summary = build_mps(inputs, plan.to_dict(), disagg_detail)
         mrp_results, mrp_summary_df = build_all_mrp(inputs, mps_summary["period_product_production"])
@@ -156,7 +186,12 @@ def generate_plan_results(write_outputs: bool = True, print_summary: bool = Fals
             + float(mrp_summary_df["chosen_total_cost"].sum())
         )
 
-        scenario_runs[strategy_name] = {
+        stage_runs[candidate_id] = {
+            "candidate_id": candidate_id,
+            "display_name": _candidate_display_name(candidate),
+            "strategy": candidate["strategy"],
+            "hybrid_rank": candidate["hybrid_rank"],
+            "aggregate_plan": plan,
             "disaggregate_df": disagg_df,
             "disaggregate_detail": disagg_detail,
             "mps_df": mps_df,
@@ -169,31 +204,23 @@ def generate_plan_results(write_outputs: bool = True, print_summary: bool = Fals
             "total_planning_cost": total_planning_cost,
         }
 
-    # Aggregate-only source of truth for the dashboard selector and executive summary.
-    aggregate_feasible = [name for name, plan in plans.items() if plan.feasible]
-    if aggregate_feasible:
-        best_name = min(aggregate_feasible, key=lambda name: plans[name].cost_breakdown["total_cost"])
-    else:
-        best_name = choose_best_strategy(plans).strategy
-    best_plan = plans[best_name]
-    best_run = scenario_runs[best_name]
-
-    comparison_rows = []
-    for strategy_name, plan in plans.items():
         costs = plan.cost_breakdown
-        if strategy_name == "chase":
+        if candidate["strategy"] == "chase":
             requested = requested_aggregate_outcomes["chase"]
             display_total = requested["costs"]["total_cost"]
-        elif strategy_name == "level":
+        elif candidate["strategy"] == "level":
             requested = requested_aggregate_outcomes["level"]
             display_total = requested["costs"]["total_cost"]
         else:
             display_total = costs["total_cost"]
 
         feasibility_summary = plan.to_dict().get("feasibility_summary", {})
-        comparison_rows.append(
+        aggregate_stage_rows.append(
             {
-                "strategy": strategy_name,
+                "candidate_id": candidate_id,
+                "display_name": _candidate_display_name(candidate),
+                "strategy": candidate["strategy"],
+                "hybrid_rank": candidate["hybrid_rank"],
                 "feasible": plan.feasible,
                 "aggregate_feasible": feasibility_summary.get("aggregate_feasible", plan.feasible),
                 "inventory_constraints_satisfied": feasibility_summary.get("inventory_constraints_satisfied", plan.feasible),
@@ -217,18 +244,31 @@ def generate_plan_results(write_outputs: bool = True, print_summary: bool = Fals
                 "warnings": " | ".join(plan.warnings),
             }
         )
-    comparison_df = pd.DataFrame(comparison_rows).sort_values("total_cost")
+    aggregate_stage_rows = sorted(aggregate_stage_rows, key=lambda row: row["total_cost"])
+    for rank, row in enumerate(aggregate_stage_rows, start=1):
+        row["aggregate_rank"] = rank
+    comparison_df = pd.DataFrame(aggregate_stage_rows)
     if write_outputs:
         comparison_df.to_csv(outputs_dir / "strategy_cost_comparison.csv", index=False)
 
-    aggregate_tables: Dict[str, pd.DataFrame] = {}
-    for strategy_name, plan in plans.items():
-        plan_df = aggregate_plan_df(plan)
-        aggregate_tables[strategy_name] = plan_df
-        if write_outputs:
-            plan_df.to_csv(outputs_dir / f"aggregate_plan_{strategy_name}.csv", index=False)
+    # Stage-aware final selection: only full-feasible candidates can win.
+    full_feasible_ids = [cid for cid, run in stage_runs.items() if run["full_feasible"]]
+    if full_feasible_ids:
+        best_candidate_id = min(full_feasible_ids, key=lambda cid: stage_runs[cid]["total_planning_cost"])
+    else:
+        best_candidate_id = aggregate_stage_rows[0]["candidate_id"]
+    best_run = stage_runs[best_candidate_id]
+    best_plan = best_run["aggregate_plan"]
+    best_name = best_run["strategy"]
 
-    # 2) Use the aggregate-best strategy for downstream outputs so the app stays coherent.
+    aggregate_tables: Dict[str, pd.DataFrame] = {}
+    for candidate in candidate_pool:
+        plan_df = aggregate_plan_df(candidate["plan"])
+        aggregate_tables[candidate["candidate_id"]] = plan_df
+        if write_outputs:
+            plan_df.to_csv(outputs_dir / f"aggregate_plan_{candidate['candidate_id']}.csv", index=False)
+
+    # 2) Use the best fully feasible final plan for downstream outputs.
     disagg_df = best_run["disaggregate_df"]
     disagg_detail = best_run["disaggregate_detail"]
     if write_outputs:
@@ -256,17 +296,27 @@ def generate_plan_results(write_outputs: bool = True, print_summary: bool = Fals
 
     # 5) Human-readable report + terminal summary.
     report_path = outputs_dir / "summary_report.txt"
+    report_best_name = best_run["display_name"] if best_run["display_name"] in {
+        _candidate_display_name(candidate)
+        for candidate in candidate_pool
+        if candidate["candidate_id"] in {"chase", "level", "hybrid_1", best_candidate_id}
+    } else best_name
+    plans_for_report = {
+        _candidate_display_name(candidate): candidate["plan"]
+        for candidate in candidate_pool
+        if candidate["candidate_id"] in {"chase", "level", "hybrid_1", best_candidate_id}
+    }
     if write_outputs:
-        write_summary_report(report_path, best_name, plans, mps_summary, mrp_summary_df)
+        write_summary_report(report_path, report_best_name, plans_for_report, mps_summary, mrp_summary_df)
         report_text = report_path.read_text(encoding="utf-8")
     else:
         temp_report = project_root() / "summary_report_preview.txt"
-        write_summary_report(temp_report, best_name, plans, mps_summary, mrp_summary_df)
+        write_summary_report(temp_report, report_best_name, plans_for_report, mps_summary, mrp_summary_df)
         report_text = temp_report.read_text(encoding="utf-8")
         temp_report.unlink(missing_ok=True)
 
     if print_summary:
-        print_terminal_summary(best_name, plans, mps_summary, mrp_summary_df)
+        print_terminal_summary(report_best_name, plans_for_report, mps_summary, mrp_summary_df)
 
     mrp_warnings = []
     for fruit_result in mrp_results.values():
@@ -275,15 +325,25 @@ def generate_plan_results(write_outputs: bool = True, print_summary: bool = Fals
     all_warnings = best_plan.warnings + mps_summary["warnings"] + mrp_warnings
     output_files = sorted(path.name for path in outputs_dir.glob("*")) if outputs_dir.exists() else []
     serialized_plans = {}
-    for name, plan in plans.items():
-        serialized_plans[name] = {
+    for candidate in candidate_pool:
+        cid = candidate["candidate_id"]
+        plan = candidate["plan"]
+        serialized_plans[cid] = {
             **plan.to_dict(),
-            "selected": name == best_name,
-            "mps_feasible": scenario_runs[name]["mps_feasible"],
-            "mrp_feasible": scenario_runs[name]["mrp_feasible"],
-            "full_feasible": scenario_runs[name]["full_feasible"],
-            "total_planning_cost": scenario_runs[name]["total_planning_cost"],
+            "display_name": _candidate_display_name(candidate),
+            "selected": cid == best_candidate_id,
+            "mps_feasible": stage_runs[cid]["mps_feasible"],
+            "mrp_feasible": stage_runs[cid]["mrp_feasible"],
+            "full_feasible": stage_runs[cid]["full_feasible"],
+            "total_planning_cost": stage_runs[cid]["total_planning_cost"],
+            "candidate_id": cid,
         }
+
+    # Preserve benchmark aliases for existing UI sections.
+    serialized_plans["chase_benchmark"] = serialized_plans["chase"]
+    serialized_plans["level_benchmark"] = serialized_plans["level"]
+    if hybrid_candidates:
+        serialized_plans["hybrid_benchmark"] = serialized_plans["hybrid_1"]
 
     mrp_tables: Dict[str, Dict[str, Any]] = {}
     for fruit, result in mrp_results.items():
@@ -305,9 +365,15 @@ def generate_plan_results(write_outputs: bool = True, print_summary: bool = Fals
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "best_strategy": best_name,
             "summary": {
-                "best_strategy": best_name,
-                "best_total_cost": plans[best_name].cost_breakdown["total_cost"],
-                "aggregate_cost": plans[best_name].cost_breakdown["total_cost"],
+                "best_candidate_id": best_candidate_id,
+                "best_strategy": best_run["display_name"],
+                "best_strategy_type": best_run["strategy"],
+                "best_total_cost": best_run["total_planning_cost"],
+                "aggregate_cost": best_plan.cost_breakdown["total_cost"],
+                "cheapest_aggregate_candidate_id": aggregate_stage_rows[0]["candidate_id"],
+                "cheapest_aggregate_plan": aggregate_stage_rows[0]["display_name"],
+                "cheapest_aggregate_cost": aggregate_stage_rows[0]["total_cost"],
+                "cheapest_final_plan": best_run["display_name"],
                 "setup_cost": mps_summary["setup_cost"],
                 "mrp_chosen_cost": float(mrp_summary_df["chosen_total_cost"].sum()),
                 "setup_switches": mps_summary["setup_switches"],
@@ -320,10 +386,71 @@ def generate_plan_results(write_outputs: bool = True, print_summary: bool = Fals
             "inputs": inputs,
             "requested_aggregate_outcomes": requested_aggregate_outcomes,
             "strategy_comparison": comparison_df.to_dict(orient="records"),
+            "aggregate_stage_summary": aggregate_stage_rows,
+            "mps_stage_summary": [
+                {
+                    "candidate_id": cid,
+                    "display_name": run["display_name"],
+                    "strategy": run["strategy"],
+                    "aggregate_cost": run["aggregate_plan"].cost_breakdown["total_cost"],
+                    "aggregate_rank": next(row["aggregate_rank"] for row in aggregate_stage_rows if row["candidate_id"] == cid),
+                    "mps_feasible": run["mps_feasible"],
+                    "setup_switches": run["mps_summary"]["setup_switches"],
+                    "setup_cost": run["mps_summary"]["setup_cost"],
+                    "warnings": run["mps_summary"]["warnings"],
+                }
+                for cid, run in stage_runs.items()
+            ],
+            "mrp_stage_summary": [
+                {
+                    "candidate_id": cid,
+                    "display_name": run["display_name"],
+                    "strategy": run["strategy"],
+                    "mps_feasible": run["mps_feasible"],
+                    "mrp_feasible": run["mrp_feasible"],
+                    "chosen_mrp_cost": float(run["mrp_summary_df"]["chosen_total_cost"].sum()),
+                    "fruit_methods": [
+                        {
+                            "fruit": row["fruit"],
+                            "initial_inventory": row["initial_inventory"],
+                            "chosen_method": row["chosen_method"],
+                            "chosen_total_cost": row["chosen_total_cost"],
+                            "feasible": row["feasible"],
+                        }
+                        for row in run["mrp_summary_df"].to_dict(orient="records")
+                    ],
+                    "warnings": [
+                        *sum((res["l4l"]["warnings"] for res in run["mrp_results"].values()), []),
+                        *sum((res["silver_meal"]["warnings"] for res in run["mrp_results"].values()), []),
+                    ],
+                }
+                for cid, run in stage_runs.items()
+                if run["mps_feasible"]
+            ],
+            "final_ranking": sorted(
+                [
+                    {
+                        "candidate_id": cid,
+                        "display_name": run["display_name"],
+                        "strategy": run["strategy"],
+                        "aggregate_rank": next(row["aggregate_rank"] for row in aggregate_stage_rows if row["candidate_id"] == cid),
+                        "aggregate_cost": run["aggregate_plan"].cost_breakdown["total_cost"],
+                        "mps_feasible": run["mps_feasible"],
+                        "setup_cost": run["mps_summary"]["setup_cost"],
+                        "mrp_feasible": run["mrp_feasible"],
+                        "mrp_chosen_cost": float(run["mrp_summary_df"]["chosen_total_cost"].sum()),
+                        "final_total_cost": run["total_planning_cost"],
+                        "full_feasible": run["full_feasible"],
+                    }
+                    for cid, run in stage_runs.items()
+                ],
+                key=lambda row: (not row["full_feasible"], row["final_total_cost"]),
+            ),
             "aggregate_tables": {
                 name: df.to_dict(orient="records")
                 for name, df in aggregate_tables.items()
             },
+            "aggregate_best_table": aggregate_plan_df(best_plan).to_dict(orient="records"),
             "plans": serialized_plans,
             "disaggregate": disagg_df.to_dict(orient="records"),
             "mps": {
