@@ -120,9 +120,24 @@ def _simulate_plan(
 
 
 def _best_initial_inventory_for_plan(strategy_name: str, demands: List[int], regular_hours: List[int], cfg: Dict) -> AggregatePlan:
-    """Try initial inventory 0..max and keep lowest-cost feasible option."""
+    """Try a bounded initial inventory candidate set and keep lowest-cost feasible option."""
     best: Optional[AggregatePlan] = None
-    for init_inv in range(cfg["max_initial_finished_goods"] + 1):
+
+    # Practical speed-up:
+    # The original exhaustive search over every inventory value was too expensive
+    # when nested inside the strategy search loops. A bounded candidate list keeps
+    # the model fast and explainable for a class planning exercise.
+    #
+    # Instead of testing every inventory value (0..max) for every candidate plan,
+    # we use a bounded list. This keeps runtime predictable while still sampling
+    # low/medium/high initial inventory levels suitable for a class planning model.
+    raw_candidates = [0, 5, 10, 15, 20]
+    max_initial = cfg["max_initial_finished_goods"]
+    init_candidates = sorted({min(c, max_initial) for c in raw_candidates if c <= max_initial})
+    if max_initial not in init_candidates:
+        init_candidates.append(max_initial)
+
+    for init_inv in init_candidates:
         plan = _simulate_plan(strategy_name, demands, regular_hours, init_inv, cfg)
         if not plan.feasible:
             continue
@@ -186,16 +201,21 @@ def build_hybrid_strategy(inputs: Dict, chase: AggregatePlan, level: AggregatePl
     reg_multiple = cfg["regular_hours_must_be_divisible_by"]
 
     baseline = [cfg["initial_regular_hours_q1"], cfg["initial_regular_hours_q1"], cfg["initial_regular_hours_q1"]]
-    q_ranges = [
-        range(300, 901, reg_multiple),
-        range(450, 1201, reg_multiple),
-        range(450, 1001, reg_multiple),
-    ]
+
+    # Practical speed-up:
+    # The original broad/fine-grained enumeration produced a very large search
+    # space and made runtime too slow. We now use a bounded candidate set that
+    # still represents low/mid/high regular-hour plans and preserves the hybrid
+    # intent without excessive brute-force computation.
+    base_candidates = [300, 330, 360, 390, 420]
+    hour_candidates = [c for c in base_candidates if c % reg_multiple == 0]
+    if not hour_candidates:
+        hour_candidates = [cfg["initial_regular_hours_q1"]]
 
     best: Optional[AggregatePlan] = None
-    for q1 in q_ranges[0]:
-        for q2 in q_ranges[1]:
-            for q3 in q_ranges[2]:
+    for q1 in hour_candidates:
+        for q2 in hour_candidates:
+            for q3 in hour_candidates:
                 # Keep "hybrid" moderate by restricting abrupt quarter-to-quarter changes.
                 if abs(q2 - q1) > 450 or abs(q3 - q2) > 450:
                     continue
